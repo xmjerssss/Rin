@@ -66,9 +66,8 @@ function MarkdownToolButton({
 }
 
 function buildHtmlVideo(url: string, mime = "video/mp4") {
-  // QuickTime(.mov) 在浏览器里按 mp4 解码，其它格式沿用文件自身的 MIME 类型
   const type = !mime || mime === "video/quicktime" ? "video/mp4" : mime;
-  return `\n<video controls width="100%" preload="metadata" style="border-radius: 12px; margin: 16px 0; background: #000;">\n  <source src="${url}" type="${type}">\n  Your browser does not support the video tag.\n</video>\n`;
+  return `\n\n<video controls width="100%" preload="metadata" style="border-radius: 12px; margin: 16px 0; background: #000;">\n  <source src="${url}" type="${type}">\n  Your browser does not support the video tag.\n</video>\n\n`;
 }
 
 function isVideoFile(file: File) {
@@ -79,10 +78,9 @@ function isImageFile(file: File) {
   return file.type.startsWith("image/");
 }
 
-/** 普通文件（压缩包、PDF、文档等）插入为下载链接 */
 function buildFileLink(name: string, url: string) {
   const safeName = name.replace(/[[\]]/g, "");
-  return `\n[📎 ${safeName}](${url.replace(/\s/g, "%20")})\n`;
+  return `\n\n[📎 ${safeName}](${url.replace(/\s/g, "%20")})\n\n`;
 }
 
 export function MarkdownEditor({ content, setContent, placeholder = "> Write your content here...", height = "400px" }: MarkdownEditorProps) {
@@ -94,7 +92,6 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
   const [uploading, setUploading] = useState(false);
   const { showAlert, AlertUI } = useAlert();
 
-  // 视频弹窗状态
   const [videoModalOpen, setVideoModalOpen] = useState(false);
   const [videoUrlInput, setVideoUrlInput] = useState('');
 
@@ -125,6 +122,10 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
         text: textToInsert,
       }]);
       setContent(editorInstance.getValue());
+
+      const position = positionAfterText(range.startLineNumber, range.startColumn, textToInsert);
+      editorInstance.setPosition(position);
+      editorInstance.setSelection(new Selection(position.lineNumber, position.column, position.lineNumber, position.column));
     } catch (error) {
       console.error(error);
       showAlertFn(error instanceof Error ? error.message : t("upload.failed"));
@@ -206,15 +207,14 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
     const selectedText = model.getValueInRange(selection);
     const alt = selectedText || t("markdown_editor.placeholder.image_alt");
     const url = t("markdown_editor.placeholder.image_url");
-    const prefix = `![${alt}](`;
-    const insertedText = `${prefix}${url})`;
+    const prefix = `\n\n![${alt}](`;
+    const insertedText = `${prefix}${url})\n\n`;
     const urlStart = positionAfterText(selection.startLineNumber, selection.startColumn, prefix);
     const urlEnd = positionAfterText(urlStart.lineNumber, urlStart.column, url);
 
     replaceSelection(selection, insertedText, new Selection(urlStart.lineNumber, urlStart.column, urlEnd.lineNumber, urlEnd.column));
   };
 
-  // 插入外部视频链接或 Bilibili iframe
   const submitInsertVideo = () => {
     if (!videoUrlInput.trim()) {
       setVideoModalOpen(false);
@@ -229,17 +229,14 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
     let raw = videoUrlInput.trim();
     let textToInsert = '';
 
-    // 如果用户粘贴的是 Bilibili 完整 iframe，直接使用
     if (raw.includes("<iframe") && raw.includes("bilibili")) {
-      textToInsert = `\n<div style="position: relative; padding: 30% 45%; margin: 16px 0;">\n  ${raw.replace(/width=".*?"/, 'width="100%"').replace(/height=".*?"/, 'height="100%" style="position: absolute; width: 100%; height: 100%; left: 0; top: 0; border-radius: 12px;"')}\n</div>\n`;
+      textToInsert = `\n\n<div style="position: relative; padding: 30% 45%; margin: 16px 0;">\n  ${raw.replace(/width=".*?"/, 'width="100%"').replace(/height=".*?"/, 'height="100%" style="position: absolute; width: 100%; height: 100%; left: 0; top: 0; border-radius: 12px;"')}\n</div>\n\n`;
     } 
-    // 如果用户粘贴的是 Bilibili 链接 (如 https://www.bilibili.com/video/BV1xx411c7mD)
     else if (raw.includes("bilibili.com/video/BV")) {
       const match = raw.match(/BV[a-zA-Z0-9]+/);
       const bvid = match ? match[0] : '';
-      textToInsert = `\n<div style="position: relative; width: 100%; height: 0; padding-bottom: 56.25%; margin: 16px 0;">\n  <iframe src="//player.bilibili.com/player.html?bvid=${bvid}&page=1&high_quality=1&danmaku=0" scrolling="no" border="0" frameborder="no" framespacing="0" allowfullscreen="true" style="position: absolute; width: 100%; height: 100%; left: 0; top: 0; border-radius: 12px;"></iframe>\n</div>\n`;
+      textToInsert = `\n\n<div style="position: relative; width: 100%; height: 0; padding-bottom: 56.25%; margin: 16px 0;">\n  <iframe src="//player.bilibili.com/player.html?bvid=${bvid}&page=1&high_quality=1&danmaku=0" scrolling="no" border="0" frameborder="no" framespacing="0" allowfullscreen="true" style="position: absolute; width: 100%; height: 100%; left: 0; top: 0; border-radius: 12px;"></iframe>\n</div>\n\n`;
     } 
-    // 默认作为常规直链视频 (MP4 / WebM)
     else {
       textToInsert = buildHtmlVideo(raw);
     }
@@ -272,7 +269,7 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
     const editorState = getEditorAndSelection();
     if (!editorState) return;
 
-    replaceSelection(editorState.selection, "\n---\n");
+    replaceSelection(editorState.selection, "\n\n---\n\n");
   };
 
   const formatSelectedLines = (
@@ -349,7 +346,6 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
     { key: "italic", icon: "ri-italic", label: t("markdown_editor.toolbar.italic"), onClick: () => wrapSelection("*", "*", t("markdown_editor.placeholder.italic")) },
     { key: "link", icon: "ri-link", label: t("markdown_editor.toolbar.link"), onClick: insertLink },
     { key: "image", icon: "ri-image-line", label: t("markdown_editor.toolbar.image"), onClick: insertMarkdownImage },
-    // ★ 新增：插入视频外链 / B站嵌入
     { key: "video-link", icon: "ri-film-line", label: "插入视频链接 / B站", onClick: () => setVideoModalOpen(true) },
     { key: "quote", icon: "ri-double-quotes-l", label: t("markdown_editor.toolbar.quote"), onClick: formatQuote },
     { key: "unordered-list", icon: "ri-list-unordered", label: t("markdown_editor.toolbar.unordered_list"), onClick: formatUnorderedList },
@@ -361,20 +357,23 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
 
   const handlePaste = async (event: React.ClipboardEvent<HTMLDivElement>) => {
     const clipboardData = event.clipboardData;
-    if (clipboardData.files.length === 1) {
+    if (clipboardData.files.length >= 1) {
       const editor = editorRef.current;
       if (!editor) return;
       editor.trigger(undefined, "undo", undefined);
       setUploading(true);
-      const myfile = clipboardData.files[0] as File;
-      const selection = editor.getSelection();
-      if (!selection) {
-        setUploading(false);
-        return;
-      }
-      void insertMedia(myfile, selection, showAlert).finally(() => {
-        setUploading(false);
-      });
+      const files = Array.from(clipboardData.files);
+      void (async () => {
+        try {
+          for (const file of files) {
+            const current = editor.getSelection();
+            if (!current) break;
+            await insertMedia(file, current, showAlert);
+          }
+        } finally {
+          setUploading(false);
+        }
+      })();
     }
   };
 
@@ -389,14 +388,11 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
       input.value = "";
       if (files.length === 0) return;
 
-      // 图片仍限制 10MB；视频和普通文件最大 2GB（超过 8MB 自动直传到存储桶，无需经过服务器）
       const maxSize = kind === "image" ? 10 * 1024 * 1024 : MAX_UPLOAD_SIZE;
       const sizeLimitName = kind === "image" ? "10" : String(Math.floor(MAX_UPLOAD_SIZE / 1024 / 1024));
 
       const editor = editorRef.current;
       if (!editor) return;
-      const selection = editor.getSelection();
-      if (!selection) return;
 
       const accepted = files.filter((file) => {
         if (file.size > maxSize) {
@@ -407,12 +403,12 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
       });
       if (accepted.length === 0) return;
 
-      // 依次上传、依次插入，避免多个文件同时写入同一个光标位置互相覆盖
       setUploading(true);
       void (async () => {
         try {
           for (const file of accepted) {
-            const current = editorRef.current?.getSelection() ?? selection;
+            const current = editorRef.current?.getSelection();
+            if (!current) break;
             await insertMedia(file, current, showAlert);
           }
         } finally {
@@ -423,7 +419,6 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
 
     return (
       <div className="flex items-center gap-1">
-        {/* 图片文件上传 */}
         <input
           ref={uploadImageRef}
           onChange={(e) => handleUpload(e, "image")}
@@ -439,7 +434,6 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
           onClick={() => uploadImageRef.current?.click()}
         />
 
-        {/* 本地视频文件上传 */}
         <input
           ref={uploadVideoRef}
           onChange={(e) => handleUpload(e, "video")}
@@ -454,7 +448,6 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
           onClick={() => uploadVideoRef.current?.click()}
         />
 
-        {/* 任意文件上传（压缩包、PDF、文档等），插入为下载链接 */}
         <input
           ref={uploadFileRef}
           onChange={(e) => handleUpload(e, "file")}
@@ -471,8 +464,6 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
       </div>
     );
   }
-
-  /* ---------------- Monaco Mount & IME Optimization ---------------- */
 
   const handleEditorMount = (editor: editor.IStandaloneCodeEditor) => {
     editorRef.current = editor;
@@ -497,8 +488,6 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
     });
   };
 
-  /* ---------------- synchronization ---------------- */
-
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -512,8 +501,6 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
       editor.setValue(content);
     }
   }, [content]);
-
-  /* ---------------- UI ---------------- */
 
   return (
     <div className="flex flex-col gap-0 sm:gap-3">
@@ -555,15 +542,20 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
               e.preventDefault();
               const editor = editorRef.current;
               if (!editor) return;
-              for (let i = 0; i < e.dataTransfer.files.length; i++) {
-                const selection = editor.getSelection();
-                if (!selection) return;
-                const file = e.dataTransfer.files[i];
-                setUploading(true);
-                void insertMedia(file, selection, showAlert).finally(() => {
+              const files = Array.from(e.dataTransfer.files);
+              if (files.length === 0) return;
+              setUploading(true);
+              void (async () => {
+                try {
+                  for (const file of files) {
+                    const current = editor.getSelection();
+                    if (!current) break;
+                    await insertMedia(file, current, showAlert);
+                  }
+                } finally {
                   setUploading(false);
-                });
-              }
+                }
+              })();
             }}
             onPaste={handlePaste}
           >
@@ -599,7 +591,6 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
         </div>
       </div>
 
-      {/* 插入视频链接弹窗 */}
       {videoModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl bg-w p-5 shadow-2xl border border-black/10 dark:border-white/10">

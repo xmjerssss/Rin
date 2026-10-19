@@ -419,6 +419,7 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
 
     return (
       <div className="flex items-center gap-1">
+        {/* 图片选择器 */}
         <input
           ref={uploadImageRef}
           onChange={(e) => handleUpload(e, "image")}
@@ -434,12 +435,13 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
           onClick={() => uploadImageRef.current?.click()}
         />
 
+        {/* 视频选择器：精确指定为 video/*，让手机系统直接唤起视频相册并显示封面预览 */}
         <input
           ref={uploadVideoRef}
           onChange={(e) => handleUpload(e, "video")}
           className="hidden"
           type="file"
-          accept="video/mp4,video/webm,video/quicktime,video/x-matroska,video/ogg,.mp4,.webm,.mov,.mkv,.m4v,.ogv"
+          accept="video/*"
         />
         <MarkdownToolButton
           label="上传本地视频"
@@ -448,6 +450,7 @@ export function MarkdownEditor({ content, setContent, placeholder = "> Write you
           onClick={() => uploadVideoRef.current?.click()}
         />
 
+        {/* 通用附件/文件选择器 */}
         <input
           ref={uploadFileRef}
           onChange={(e) => handleUpload(e, "file")}

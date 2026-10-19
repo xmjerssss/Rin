@@ -46,7 +46,7 @@ class FakeRemote {
                 const match = /bytes=(\d+)-(\d*)/.exec(range)!;
                 const start = Number(match[1]);
                 const end = match[2] ? Number(match[2]) : object.body.length - 1;
-                return new Response(object.body.slice(start, end + 1), {
+                return new Response((object.body.slice(start, end + 1) as any), {
                     status: 206,
                     headers: {
                         "content-type": object.type,
@@ -54,7 +54,7 @@ class FakeRemote {
                     },
                 });
             }
-            return new Response(object.body, { status: 200, headers: { "content-type": object.type } });
+            return new Response((object.body as any), { status: 200, headers: { "content-type": object.type } });
         }) as typeof fetch;
         return () => {
             globalThis.fetch = original;
@@ -101,7 +101,7 @@ describe("多存储：自定义 R2 / S3 / WebDAV", () => {
                         httpEtag: "etag",
                         uploaded: new Date(),
                         writeHttpMetadata: (headers: Headers) => headers.set("Content-Type", "image/png"),
-                        body: new Blob([data]).stream(),
+                        body: new Blob([data as any]).stream(),
                     } as unknown as R2ObjectBody;
                 },
                 delete: async (key: string) => {

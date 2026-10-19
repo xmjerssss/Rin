@@ -23,7 +23,6 @@ import { useColorMode } from "../utils/darkModeUtils";
 import { parseImageUrlMetadata } from "../utils/image-upload";
 import { useImageLoadState } from "../utils/use-image-load-state";
 
-
 const countNewlinesBeforeNode = (text: string, offset: number) => {
   let newlinesBefore = 0;
   for (let i = offset - 1; i >= 0; i--) {
@@ -49,6 +48,13 @@ const isMarkdownImageLinkAtEnd = (text: string) => {
 
   return false;
 };
+
+function ensureBlankLinesAroundHtmlBlocks(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/((?:<\/(?:video|iframe|div|table|section|article|audio)>|<(?:video|iframe)\b[^>]*\/>)\s*)\n(?!\n)/gi, '$1\n\n')
+    .replace(/(\n[^\n]+)\n(<(?:video|iframe|div|table|section|article|audio)\b)/gi, '$1\n\n$2');
+}
 
 function MarkdownImage({
   src,
@@ -131,18 +137,20 @@ export function Markdown({ content }: { content: string }) {
     slides.current = undefined;
   }, [content]);
 
-
+  const normalizedContent = useMemo(() => {
+    return ensureBlankLinesAroundHtmlBlocks(content);
+  }, [content]);
 
   const Content = useMemo(() => (
     <ReactMarkdown
       className="toc-content min-w-0 dark:text-neutral-300 [overflow-wrap:anywhere]"
       remarkPlugins={[gfm, remarkMermaid, remarkMath, remarkAlert, remarkBreaks]}
-      children={content}
+      children={normalizedContent}
       rehypePlugins={[rehypeKatex, rehypeRaw]}
       components={{
         img({ node, src, ...props }) {
           const offset = node!.position!.start.offset!;
-          const previousContent = content.slice(0, offset);
+          const previousContent = normalizedContent.slice(0, offset);
           const newlinesBefore = countNewlinesBeforeNode(
             previousContent,
             offset
@@ -186,7 +194,7 @@ export function Markdown({ content }: { content: string }) {
           const { children, className, node, ...rest } = props;
           const match = /language-(\w+)/.exec(className || "");
 
-          const curContent = content.slice(node?.position?.start.offset || 0);
+          const curContent = normalizedContent.slice(node?.position?.start.offset || 0);
           const isCodeBlock = curContent.trimStart().startsWith("```");
 
           const codeBlockStyle = {
@@ -438,9 +446,8 @@ export function Markdown({ content }: { content: string }) {
           return <div {...props}>{children}</div>;
         },
       }}
-    />), [content])
-
-
+    />
+  ), [normalizedContent, colorMode]);
 
   const show = (src: string | undefined) => {
     let slidesLocal = slides.current;
@@ -464,7 +471,7 @@ export function Markdown({ content }: { content: string }) {
           };
         })
         .filter((slide) => slide.src !== "");
-      slides.current = (slidesLocal);
+      slides.current = slidesLocal;
     }
     const index = slidesLocal?.findIndex((slide) => slide.src === src) ?? -1;
     setIndex(index);

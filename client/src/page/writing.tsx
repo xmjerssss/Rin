@@ -127,10 +127,12 @@ export function WritingPage({ id }: { id?: number }) {
   const [alias, setAlias] = cache.useCache("alias", "");
   const [draft, setDraft] = useState(false);
   const [listed, setListed] = useState(true);
+  const [allowComment, setAllowComment] = useState(true);
   const [content, setContent] = cache.useCache("content", "");
   const [createdAt, setCreatedAt] = useState<Date | undefined>(new Date());
   const [publishing, setPublishing] = useState(false)
   const { showAlert, AlertUI } = useAlert()
+
   function publishButton() {
     if (publishing) return;
     const tagsplit =
@@ -138,12 +140,24 @@ export function WritingPage({ id }: { id?: number }) {
         .split("#")
         .filter((tag) => tag !== "")
         .map((tag) => tag.trim()) || [];
+
+    // 格式化最终内容：如果关闭评论，在文末附上隐藏标记；若开启，则确保清理掉标记
+    let finalContent = content
+      .replace(/\n*<span id="hide-comment"><\/span>\n*/g, "")
+      .replace(/\n*<div id="hide-comment"><\/div>\n*/g, "")
+      .replace(/\n*\[#?hide-comment\]\(hide-comment\)\n*/g, "")
+      .trimEnd();
+
+    if (!allowComment) {
+      finalContent = finalContent + '\n\n<span id="hide-comment"></span>\n';
+    }
+
     if (id !== undefined) {
       setPublishing(true)
       update({
         id,
         title,
-        content,
+        content: finalContent,
         summary,
         alias,
         tags: tagsplit,
@@ -167,7 +181,7 @@ export function WritingPage({ id }: { id?: number }) {
       setPublishing(true)
       publish({
         title,
-        content,
+        content: finalContent,
         summary,
         tags: tagsplit,
         draft,
@@ -192,7 +206,18 @@ export function WritingPage({ id }: { id?: number }) {
             if (tags == "" && Array.isArray(data.hashtags))
               setTags(data.hashtags.map(({ name }: {name: string}) => `#${name}`).join(" "));
             if (alias == "" && (data as any).alias) setAlias((data as any).alias);
-            if (content == "") setContent(data.content);
+
+            // 识别是否关闭了评论，并在编辑框中移除暗号
+            const hasHideComment = data.content.includes("hide-comment");
+            setAllowComment(!hasHideComment);
+
+            const cleanContent = data.content
+              .replace(/\n*<span id="hide-comment"><\/span>\n*/g, "")
+              .replace(/\n*<div id="hide-comment"><\/div>\n*/g, "")
+              .replace(/\n*\[#?hide-comment\]\(hide-comment\)\n*/g, "")
+              .trimEnd();
+
+            if (content == "") setContent(cleanContent);
             if (summary == "") setSummary((data as any).summary || "");
             setListed((data as any).listed === 1);
             setDraft((data as any).draft === 1);
@@ -201,6 +226,7 @@ export function WritingPage({ id }: { id?: number }) {
         });
     }
   }, []);
+
   const debouncedUpdate = useCallback(
     _.debounce(() => {
       mermaid.initialize({
@@ -223,9 +249,11 @@ export function WritingPage({ id }: { id?: number }) {
     }, 100),
     []
   );
+
   useEffect(() => {
     debouncedUpdate();
   }, [content, debouncedUpdate]);
+
   function PublishButton({ className }: { className?: string }) {
     return (
       <button
@@ -287,7 +315,7 @@ export function WritingPage({ id }: { id?: number }) {
             />
           </div>
 
-          <div className="mt-5 grid gap-2 sm:gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(18rem,2fr)]">
+          <div className="mt-5 grid gap-2 sm:gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(18rem,1.5fr)]">
             <FlatMetaRow
               className="cursor-pointer rounded-none border-0 bg-transparent px-0 py-2 sm:rounded-2xl sm:border sm:bg-secondary sm:px-4 sm:py-3"
               onClick={() => setDraft(!draft)}
@@ -312,7 +340,19 @@ export function WritingPage({ id }: { id?: number }) {
                 placeholder={t('listed')}
               />
             </FlatMetaRow>
-            <FlatMetaRow className="gap-3 rounded-none border-0 bg-transparent px-0 py-2 sm:rounded-2xl sm:border sm:bg-secondary sm:px-4 sm:py-3 xl:col-span-1">
+            <FlatMetaRow
+              className="cursor-pointer rounded-none border-0 bg-transparent px-0 py-2 sm:rounded-2xl sm:border sm:bg-secondary sm:px-4 sm:py-3"
+              onClick={() => setAllowComment(!allowComment)}
+            >
+              <p>{t('comment.allow', '允许评论')}</p>
+              <Checkbox
+                id="allowComment"
+                value={allowComment}
+                setValue={setAllowComment}
+                placeholder={t('comment.allow', '允许评论')}
+              />
+            </FlatMetaRow>
+            <FlatMetaRow className="gap-3 rounded-none border-0 bg-transparent px-0 py-2 sm:rounded-2xl sm:border sm:bg-secondary sm:px-4 sm:py-3">
               <p className="mr-2 whitespace-nowrap">
                 {t('created_at')}
               </p>

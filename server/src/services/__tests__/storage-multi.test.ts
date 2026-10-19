@@ -179,7 +179,7 @@ describe("多存储：自定义 R2 / S3 / WebDAV", () => {
 
         expect(files.size).toBe(0);
         expect(remote.objects.size).toBe(1);
-        expect([...remote.objects.keys()][0]).toStartWith("https://s3-a.test/bkt/");
+        expect([...remote.objects.keys()][0]?.startsWith("https://s3-a.test/bkt/")).toBe(true);
 
         const res = await app.request(new URL(url).pathname.replace("/api", ""), {}, env);
         expect(res.status).toBe(200);
@@ -229,7 +229,7 @@ describe("多存储：自定义 R2 / S3 / WebDAV", () => {
         remote.failPut = (url) => url.startsWith("https://s3-a.test/") ? new Response("<Error><Code>QuotaExceeded</Code></Error>", { status: 507 }) : null;
 
         const url = await upload(app, "needs-b");
-        expect([...remote.objects.keys()][0]).toStartWith("https://s3-b.test/");
+        expect([...remote.objects.keys()][0]?.startsWith("https://s3-b.test/")).toBe(true);
 
         const list = (await (await app.request("/storages", {}, env)).json()) as any;
         const storageA = list.items.find((i: any) => i.id === a.id);
@@ -276,7 +276,7 @@ describe("多存储：自定义 R2 / S3 / WebDAV", () => {
             folder: "blog/media",
         });
         const url = await upload(app, "0123456789", "clip.mp4", "video/mp4");
-        expect([...remote.objects.keys()][0]).toStartWith("https://dav-main.test/remote.php/dav/files/me/blog/media/");
+        expect([...remote.objects.keys()][0]?.startsWith("https://dav-main.test/remote.php/dav/files/me/blog/media/")).toBe(true);
 
         const path = new URL(url).pathname.replace("/api", "");
         const res = await app.request(path, { headers: { Range: "bytes=2-5" } }, env);

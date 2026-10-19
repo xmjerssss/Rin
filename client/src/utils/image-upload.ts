@@ -80,7 +80,7 @@ export function stripImageUrlMetadata(url?: string | null) {
 export function buildMarkdownImage(fileName: string, url: string, metadata: ImageMetadata = {}) {
   const safeAlt = fileName.replace(/[[\]]/g, "");
   const safeUrl = url.replace(/\s/g, "%20");
-  return `![${safeAlt}](${attachImageMetadataToUrl(safeUrl, metadata)})\n`;
+  return `\n\n![${safeAlt}](${attachImageMetadataToUrl(safeUrl, metadata)})\n\n`;
 }
 
 async function loadImage(file: File) {

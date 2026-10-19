@@ -208,7 +208,7 @@ export function StorageAdminService(): Hono {
         const body = (await c.req.json().catch(() => ({}))) as StorageInput;
         try {
             const data = validate(body, existing);
-            const patch: Record<string, unknown> = { ...data, updatedAt: new Date() };
+            const patch: Partial<typeof storages.$inferInsert> = { ...data, updatedAt: new Date() };
             if (body.secret) patch.secretEnc = await encryptSecret(env, body.secret);
             if (body.status === "ok") {
                 patch.status = "ok";

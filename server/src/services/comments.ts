@@ -24,13 +24,10 @@ export function CommentService(): Hono {
             orderBy: [desc(comments.createdAt)]
         }));
         
-        // 将结果统一为前端兼容格式：登录用户用 user 字段，游客用 guestName 等
         const result = comment_list.map((c: any) => {
             if (c.user) {
-                // 登录用户的评论
                 return c;
             }
-            // 游客评论：去掉空的 user 字段，保留 guestName 等
             const { user, ...rest } = c;
             return {
                 ...rest,
@@ -60,6 +57,11 @@ export function CommentService(): Hono {
         const exist = await profileAsync(c, 'comment_create_feed', () => db.query.feeds.findFirst({ where: eq(feeds.id, feedId) }));
         if (!exist) {
             return c.text('Feed not found', 400);
+        }
+
+        // 如果该文章关闭了评论，直接拦截提交
+        if (exist.content.includes('hide-comment')) {
+            return c.text('Comments are disabled for this post', 403);
         }
 
         // 登录用户评论
@@ -160,7 +162,6 @@ export function CommentService(): Hono {
             return c.text('Not found', 404);
         }
         
-        // 管理员可删任意评论；普通用户只能删自己的
         if (admin) {
             await db.delete(comments).where(eq(comments.id, id_num));
             return c.text('OK');

@@ -48,8 +48,9 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
   const hasAISummary = Boolean(feed?.ai_summary?.trim());
   const showAISummaryState = feed?.ai_summary_status === "pending" || feed?.ai_summary_status === "processing" || feed?.ai_summary_status === "failed";
   const hashtags = Array.isArray(feed?.hashtags) ? feed.hashtags : [];
+  const isCommentDisabled = Boolean(feed?.content?.includes("hide-comment"));
+
   function deleteFeed() {
-    // Confirm
     showConfirm(
       t("article.delete.title"),
       t("article.delete.confirm"),
@@ -67,10 +68,10 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
           });
       })
   }
+
   function topFeed() {
     const isUnTop = !(top > 0)
     const topNew = isUnTop ? 1 : 0;
-    // Confirm
     showConfirm(
       isUnTop ? t("article.top.title") : t("article.untop.title"),
       isUnTop ? t("article.top.confirm") : t("article.untop.confirm"),
@@ -88,6 +89,7 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
           });
       })
   }
+
   useEffect(() => {
     if (ref.current == id) return;
     setFeed(undefined);
@@ -112,6 +114,7 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
       });
     ref.current = id;
   }, [id]);
+
   useEffect(() => {
     mermaid.initialize({
       startOnLoad: false,
@@ -306,7 +309,7 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
                 </div>
               </article>
               {id !== "about" && <AdjacentSection id={id} setError={setError} />}
-              {feed && <Comments id={`${feed.id}`} />}
+              {feed && !isCommentDisabled && <Comments id={`${feed.id}`} />}
               <div className="h-16" />
             </main>
             <div className="w-80 hidden lg:block relative">
@@ -368,15 +371,16 @@ function CommentInput({
   const profile = useContext(ProfileContext);
   const [, setLocation] = useLocation();
   const config = useContext(ClientConfigContext);
-  // guest comments enabled by default; admin can disable via client config `comment.guest.enabled=false`
   const rawGuest = config.get('comment.guest.enabled');
   const guestEnabled = rawGuest !== false && rawGuest !== 'false';
+
   function errorHumanize(error: string) {
     if (error === "Unauthorized") return t("login.required");
     else if (error === "Content is required") return t("comment.empty");
     else if (error === "Guest name is required") return t("comment.guest_name_required");
     return error;
   }
+
   function submit() {
     if (profile) {
       client.comment
@@ -422,6 +426,7 @@ function CommentInput({
       setLocation('/login');
     }
   }
+
   return (
     <div className="w-full rounded-2xl bg-w t-primary p-6 items-end flex flex-col">
       <div className="flex flex-col w-full items-start mb-4">
@@ -579,6 +584,7 @@ function CommentItem({
   const profile = useContext(ProfileContext);
   const commenterName = comment.user?.username || comment.guestName || t("anonymous");
   const commenterAvatar = comment.user?.avatar || "/avatar.png";
+
   function deleteComment() {
     showConfirm(
       t("delete.comment.title"),
@@ -597,6 +603,7 @@ function CommentItem({
           });
       })
   }
+
   return (
     <div className="flex flex-row items-start rounded-xl mt-2">
       <ImageWithFallback

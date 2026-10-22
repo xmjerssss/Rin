@@ -15,7 +15,8 @@ import {
     users,
     visitStats,
 } from "../db/schema";
-import { createEnvDriverIfConfigured, driverForRow } from "../utils/storage-manager";
+import { createEnvDriverIfConfigured } from "../utils/storage-drivers";
+import { driverForRow } from "../utils/storage-manager";
 
 const BACKUP_SCHEMA_VERSION = 1;
 
@@ -110,8 +111,8 @@ export function BackupService(): Hono {
 
         const data = payload.data;
 
-        // D1 批处理写入工具，每次 40 条，彻底避免 SQLite 参数超限
-        async function chunkedInsert<T extends Record<string, any>>(table: any, rows: T[], chunkSize = 40) {
+        // D1 批处理写入工具，每次 30 条，彻底避免 SQLite 参数超限
+        async function chunkedInsert<T extends Record<string, any>>(table: any, rows: T[], chunkSize = 30) {
             if (!rows || rows.length === 0) return;
             for (let i = 0; i < rows.length; i += chunkSize) {
                 const chunk = rows.slice(i, i + chunkSize);
@@ -134,7 +135,7 @@ export function BackupService(): Hono {
         await db.delete(cache).where(inArray(cache.type, ["client.config", "server.config"]));
         await db.delete(users);
 
-        // 2. 依次按拓扑顺序安全恢复插入
+        // 2. 依次按拓扑依赖顺序安全恢复插入
         if (data.users?.length) {
             await chunkedInsert(users, data.users.map((u: any) => ({
                 ...u,
@@ -221,7 +222,7 @@ export function BackupService(): Hono {
             })));
         }
 
-        // 清理缓存
+        // 清理系统缓存
         await cacheManager.clear();
     }
 

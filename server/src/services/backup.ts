@@ -19,18 +19,19 @@ import { createEnvDriverIfConfigured } from "../utils/storage-drivers";
 import { driverForRow } from "../utils/storage-manager";
 
 const BACKUP_SCHEMA_VERSION = 1;
+const MAX_CLOUD_BACKUPS = 3; // 云端最多保留 3 份备份
 
-/** 获取当前系统可用的最佳存储驱动（优先使用自定义的高优先级存储，否则使用默认存储） */
+/** 获取当前系统可用的最佳存储驱动 */
 async function getActiveStorageDriver(env: Env, db: any) {
     const customStorages = await db.select().from(storages);
     const active = customStorages.find((s: any) => s.enabled === 1 && s.status === "ok");
     if (active) {
         const driver = await driverForRow(env, active);
-        return { driver, folder: active.folder || "backups", name: active.name };
+        return { driver, folder: active.folder || "", name: active.name, bucket: active.bucket };
     }
     const envDriver = createEnvDriverIfConfigured(env);
     if (envDriver) {
-        return { driver: envDriver.driver, folder: envDriver.folder || "backups", name: "默认存储" };
+        return { driver: envDriver.driver, folder: envDriver.folder || "", name: "环境变量默认存储", bucket: env.S3_BUCKET || "default" };
     }
     return null;
 }
@@ -103,15 +104,14 @@ export function BackupService(): Hono {
         };
     }
 
-    // 执行数据恢复
+    // 执行数据恢复核心逻辑（拓扑分批安全插入）
     async function executeRestore(db: any, cacheManager: any, payload: any) {
         if (!payload || !payload.data || payload.app !== "rin") {
-            throw new Error("无效的备份文件结构，请确保上传由 Rin 导出的备份包");
+            throw new Error("无效的备份文件结构，请确保使用的是 Rin 导出的备份包");
         }
 
         const data = payload.data;
 
-        // D1 批处理写入工具，每次 30 条，彻底避免 SQLite 参数超限
         async function chunkedInsert<T extends Record<string, any>>(table: any, rows: T[], chunkSize = 30) {
             if (!rows || rows.length === 0) return;
             for (let i = 0; i < rows.length; i += chunkSize) {
@@ -122,7 +122,7 @@ export function BackupService(): Hono {
 
         const parseDate = (d: any) => (d ? new Date(d) : new Date());
 
-        // 1. 清理原有数据（按逆外键依赖顺序）
+        // 1. 清理原有数据（按外键依赖逆序）
         await db.delete(feedHashtags);
         await db.delete(comments);
         await db.delete(visitStats);
@@ -135,7 +135,7 @@ export function BackupService(): Hono {
         await db.delete(cache).where(inArray(cache.type, ["client.config", "server.config"]));
         await db.delete(users);
 
-        // 2. 依次按拓扑依赖顺序安全恢复插入
+        // 2. 依次按依赖关系恢复
         if (data.users?.length) {
             await chunkedInsert(users, data.users.map((u: any) => ({
                 ...u,
@@ -222,9 +222,41 @@ export function BackupService(): Hono {
             })));
         }
 
-        // 清理系统缓存
+        // 清理缓存
         await cacheManager.clear();
     }
+
+    // 0. GET /backup/preview —— 获取即将备份的数据量预览与目标存储
+    app.get("/preview", adminOnly(async (c: AppContext) => {
+        const db = c.get("db");
+        const env = c.get("env");
+
+        const [feedCount, commentCount, momentCount, friendCount, storageCount] = await Promise.all([
+            db.select().from(feeds),
+            db.select().from(comments),
+            db.select().from(moments),
+            db.select().from(friends),
+            db.select().from(storages),
+        ]);
+
+        const target = await getActiveStorageDriver(env, db);
+
+        return c.json({
+            ok: true,
+            preview: {
+                feedsCount: feedCount.length,
+                commentsCount: commentCount.length,
+                momentsCount: momentCount.length,
+                friendsCount: friendCount.length,
+                storagesCount: storageCount.length,
+            },
+            targetStorage: {
+                configured: Boolean(target),
+                name: target?.name || "未配置",
+                folder: target ? `${target.folder ? `${target.folder}/` : ""}backups` : "",
+            },
+        });
+    }));
 
     // 1. GET /backup/export —— 下载完整备份 JSON 文件到本地
     app.get("/export", adminOnly(async (c: AppContext) => {
@@ -244,36 +276,145 @@ export function BackupService(): Hono {
         });
     }));
 
-    // 2. POST /backup/export-to-storage —— 备份并存入已绑定的 S3/R2/WebDAV 存储桶
+    // 2. POST /backup/export-to-storage —— 备份并存入云存储（最多保留 3 份，自动轮转）
     app.post("/export-to-storage", adminOnly(async (c: AppContext) => {
         const db = c.get("db");
         const env = c.get("env");
 
         const target = await getActiveStorageDriver(env, db);
         if (!target) {
-            return c.json({ ok: false, error: "未找到任何可用的存储桶（请先在后台「存储管理」添加 R2/S3/WebDAV）" }, 400);
+            return c.json({ ok: false, error: "未找到任何可用的存储桶，请先在「存储管理」绑定一个存储。" }, 400);
         }
 
         const snapshot = await createSnapshot(db);
         const jsonStr = JSON.stringify(snapshot, null, 2);
         const dateStr = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-        const objectKey = `${target.folder ? `${target.folder}/` : ""}backups/rin-backup-${dateStr}.json`.replace(/\/+/g, "/");
+        const fileName = `rin-backup-${dateStr}.json`;
+        const objectKey = `${target.folder ? `${target.folder}/` : ""}backups/${fileName}`.replace(/\/+/g, "/");
+        const indexKey = `${target.folder ? `${target.folder}/` : ""}backups/index.json`.replace(/\/+/g, "/");
 
         try {
+            // 写入新的备份文件
             await target.driver.put(objectKey, jsonStr, "application/json");
+
+            // 读取已有的 backups/index.json 列表
+            let backupList: any[] = [];
+            try {
+                const indexRes = await target.driver.get(indexKey);
+                if (indexRes && indexRes.ok) {
+                    const text = await indexRes.text();
+                    backupList = JSON.parse(text);
+                    if (!Array.isArray(backupList)) backupList = [];
+                }
+            } catch {
+                backupList = [];
+            }
+
+            // 加入新备份记录到开头
+            backupList.unshift({
+                key: objectKey,
+                filename: fileName,
+                createdAt: snapshot.exportedAt,
+                metadata: snapshot.metadata,
+            });
+
+            // 检查数量：如果超出上限（3份），自动删除最早的备份文件
+            let prunedCount = 0;
+            if (backupList.length > MAX_CLOUD_BACKUPS) {
+                const toPrune = backupList.slice(MAX_CLOUD_BACKUPS);
+                backupList = backupList.slice(0, MAX_CLOUD_BACKUPS);
+                for (const old of toPrune) {
+                    if (old.key) {
+                        await target.driver.delete(old.key).catch(() => {});
+                        prunedCount++;
+                    }
+                }
+            }
+
+            // 更新并保存 index.json
+            await target.driver.put(indexKey, JSON.stringify(backupList, null, 2), "application/json");
+
             return c.json({
                 ok: true,
+                filename: fileName,
                 target: target.name,
                 path: objectKey,
                 exportedAt: snapshot.exportedAt,
                 metadata: snapshot.metadata,
+                totalBackups: backupList.length,
+                prunedCount,
             });
         } catch (error: any) {
             return c.json({ ok: false, error: `写入存储桶失败: ${error.message || String(error)}` }, 500);
         }
     }));
 
-    // 3. POST /backup/import —— 从上传的文件恢复全量数据
+    // 3. GET /backup/storage-list —— 获取云端存储桶里的历史备份列表
+    app.get("/storage-list", adminOnly(async (c: AppContext) => {
+        const db = c.get("db");
+        const env = c.get("env");
+
+        const target = await getActiveStorageDriver(env, db);
+        if (!target) {
+            return c.json({ ok: false, error: "未配置存储桶" }, 400);
+        }
+
+        const indexKey = `${target.folder ? `${target.folder}/` : ""}backups/index.json`.replace(/\/+/g, "/");
+        let items: any[] = [];
+        try {
+            const indexRes = await target.driver.get(indexKey);
+            if (indexRes && indexRes.ok) {
+                const text = await indexRes.text();
+                items = JSON.parse(text);
+                if (!Array.isArray(items)) items = [];
+            }
+        } catch {
+            items = [];
+        }
+
+        return c.json({
+            ok: true,
+            target: target.name,
+            items,
+        });
+    }));
+
+    // 4. POST /backup/restore-from-storage —— 从云端选定的一份备份文件恢复
+    app.post("/restore-from-storage", adminOnly(async (c: AppContext) => {
+        const db = c.get("db");
+        const env = c.get("env");
+        const cacheManager = c.get("cache");
+
+        const body = (await c.req.json().catch(() => ({}))) as { key?: string };
+        if (!body.key) {
+            return c.json({ ok: false, error: "缺少备份文件路径" }, 400);
+        }
+
+        const target = await getActiveStorageDriver(env, db);
+        if (!target) {
+            return c.json({ ok: false, error: "存储驱动未就绪" }, 400);
+        }
+
+        try {
+            const fileRes = await target.driver.get(body.key);
+            if (!fileRes || !fileRes.ok) {
+                return c.json({ ok: false, error: "无法从存储桶读取指定的备份文件" }, 404);
+            }
+
+            const payload = JSON.parse(await fileRes.text());
+            await executeRestore(db, cacheManager, payload);
+
+            return c.json({
+                ok: true,
+                message: "从云端备份恢复成功！",
+                counts: payload.metadata?.counts || {},
+            });
+        } catch (error: any) {
+            return c.json({ ok: false, error: error.message || "恢复失败" }, 500);
+        }
+    }));
+
+    // 5. POST /backup/import —— 从上传的本地文件恢复全量数据
     app.post("/import", adminOnly(async (c: AppContext) => {
         const db = c.get("db");
         const cacheManager = c.get("cache");
@@ -289,7 +430,7 @@ export function BackupService(): Hono {
             try {
                 payload = JSON.parse(await file.text());
             } catch {
-                return c.json({ ok: false, error: "备份文件格式损坏，无法解析为 JSON" }, 400);
+                return c.json({ ok: false, error: "备份文件损坏，无法解析为 JSON" }, 400);
             }
         } else {
             payload = await c.req.json().catch(() => null);

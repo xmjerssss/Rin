@@ -5,6 +5,7 @@ import { buildFileResponse } from "../utils/storage-drivers";
 import {
     buildBlobUrl,
     buildFileKey,
+    detectFileCategory,
     planDirectUpload,
     recordFile,
     resolveFileSource,
@@ -18,11 +19,8 @@ function buf2hex(buffer: ArrayBuffer) {
         .join('');
 }
 
-/** 小于该大小的文件按内容做 SHA-1 去重；更大的文件不在 Worker 内存中再复制一份，改用随机 ID。 */
 const HASH_SIZE_LIMIT = 20 * 1024 * 1024;
-/** 经 Worker 中转上传的体积上限（Cloudflare 请求体上限约 100MB，留出 multipart 开销）。 */
 export const PROXY_UPLOAD_LIMIT = 95 * 1024 * 1024;
-/** 预签名直传的单文件上限（S3 单次 PUT 最大 5GB，这里保守限制为 2GB）。 */
 export const DIRECT_UPLOAD_LIMIT = 2 * 1024 * 1024 * 1024;
 
 function randomId() {
@@ -36,7 +34,7 @@ function statusForError(error: any) {
 export function StorageService(): Hono {
     const app = new Hono();
 
-    // POST /storage  —— 经 Worker 中转上传（图片、小文件）
+    // POST /storage  —— 经 Worker 中转上传（根据文件类型自动进入 images / videos / files 目录）
     app.post('/', async (c: AppContext) => {
         const uid = c.get('uid');
         const env = c.get('env');
@@ -52,6 +50,7 @@ export function StorageService(): Hono {
             return c.text('file is required', 400);
         }
         const fileName = (typeof body.key === "string" && body.key) || file.name || "file";
+        const category = detectFileCategory(file.type, fileName);
 
         if (file.size > PROXY_UPLOAD_LIMIT) {
             return c.text(`文件超过 ${Math.floor(PROXY_UPLOAD_LIMIT / 1024 / 1024)}MB，无法经服务器中转上传。请在后台添加 S3 / R2 存储以启用大文件直传。`, 413);
@@ -67,7 +66,7 @@ export function StorageService(): Hono {
         }
 
         const meta = {
-            key: buildFileKey(identity, fileName),
+            key: buildFileKey(identity, fileName, category),
             name: file.name || fileName,
             mime: file.type || "",
             size: file.size,
@@ -83,7 +82,7 @@ export function StorageService(): Hono {
         }
     });
 
-    // POST /storage/presign  —— 大文件直传：返回预签名地址，浏览器直接 PUT 到存储桶
+    // POST /storage/presign  —— 大文件直传预签名（自动分发到 videos/ 或 files/ 目录）
     app.post('/presign', async (c: AppContext) => {
         const uid = c.get('uid');
         const env = c.get('env');
@@ -103,13 +102,14 @@ export function StorageService(): Hono {
             return c.text(`文件超过 ${Math.floor(DIRECT_UPLOAD_LIMIT / 1024 / 1024 / 1024)}GB 上限`, 413);
         }
 
-        const key = buildFileKey(randomId(), name);
+        const mime = body?.type || "";
+        const category = detectFileCategory(mime, name);
+        const key = buildFileKey(randomId(), name, category);
         const plan = await planDirectUpload(db, env, key, size);
         if (!plan) {
             return c.json({ mode: "proxy" });
         }
 
-        const mime = body?.type || "";
         const token = await jwt.sign({
             kind: "storage-upload",
             uid,
@@ -131,7 +131,7 @@ export function StorageService(): Hono {
         });
     });
 
-    // POST /storage/complete  —— 直传完成后确认：校验对象确实存在，再登记到文件表
+    // POST /storage/complete  —— 直传完成后确认写入
     app.post('/complete', async (c: AppContext) => {
         const uid = c.get('uid');
         const env = c.get('env');
@@ -206,8 +206,6 @@ export function BlobService(): Hono {
                 return c.text("Not found", 404);
             }
 
-            // 自定义存储配置了公开域名并开启"直链跳转"：302 到存储自己的域名，不占用 Worker 流量。
-            // 文章里的链接仍然是 /api/blob/<key>，随时可以关闭跳转或更换域名。
             const storage = source.storage;
             if (storage?.redirect === 1 && storage.publicUrl) {
                 const target = `${storage.publicUrl.replace(/\/+$/, "")}/${source.objectKey

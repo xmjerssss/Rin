@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import ReactLoading from "react-loading";
 import { client, oauth_url } from "../app/runtime";
 import { Button } from "../components/button";
-import { useAlert } from "../components/dialog.tsx";
+import { useAlert, useConfirm } from "../components/dialog.tsx";
 import { HeaderLayoutPreview } from "../components/site-header/layout-preview";
 import {
   HEADER_BEHAVIOR_OPTIONS,
@@ -57,13 +57,16 @@ export function Settings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testingWebhook, setTestingWebhook] = useState(false);
+  const [backupActionLoading, setBackupActionLoading] = useState(false);
   const [webhookTestMessage, setWebhookTestMessage] = useState("");
   const [draft, setDraft] = useState<SettingsDraft>({ clientConfig: {}, serverConfig: {} });
   const [initialDraft, setInitialDraft] = useState<SettingsDraft>({ clientConfig: {}, serverConfig: {} });
   const [hasStoredAiApiKey, setHasStoredAiApiKey] = useState(false);
   const ref = useRef(false);
+  const restoreFileRef = useRef<HTMLInputElement>(null);
   const initialDraftRef = useRef<SettingsDraft>({ clientConfig: {}, serverConfig: {} });
   const { showAlert, AlertUI } = useAlert();
+  const { showConfirm, ConfirmUI } = useConfirm();
 
   function getDraftThemeColor(nextDraft: SettingsDraft) {
     return typeof nextDraft.clientConfig["theme.color"] === "string" ? nextDraft.clientConfig["theme.color"] : undefined;
@@ -175,6 +178,71 @@ export function Settings() {
       setTestingWebhook(false);
     }
   }
+
+  // 1. 本地下载备份包
+  const handleDownloadBackup = async () => {
+    setBackupActionLoading(true);
+    try {
+      const res = await client.backup.download();
+      if (!res.ok) {
+        showAlert(res.error || "下载备份失败");
+      }
+    } catch (e: any) {
+      showAlert(`下载出错: ${e.message}`);
+    } finally {
+      setBackupActionLoading(false);
+    }
+  };
+
+  // 2. 备份至远程云存储桶
+  const handleExportToStorage = async () => {
+    setBackupActionLoading(true);
+    try {
+      const { data, error } = await client.backup.exportToStorage();
+      if (error) {
+        showAlert(`备份失败: ${error.value}`);
+      } else if (data?.ok) {
+        showAlert(`备份成功！\n目标存储: ${data.target}\n保存路径: ${data.path}`);
+      }
+    } catch (e: any) {
+      showAlert(`备份出错: ${e.message}`);
+    } finally {
+      setBackupActionLoading(false);
+    }
+  };
+
+  // 3. 上传本地备份包恢复
+  const handleRestoreFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    showConfirm(
+      "确认恢复备份？",
+      "⚠️ 警告：导入备份将用备份包中的内容完全覆盖当前博客的文章、评论、动态及配置。此操作无法撤销，确定继续吗？",
+      async () => {
+        setBackupActionLoading(true);
+        try {
+          const { data, error } = await client.backup.importFromFile(file);
+          if (error) {
+            showAlert(`恢复失败: ${error.value}`);
+          } else if (data?.ok) {
+            const counts = data.counts || {};
+            showAlert(
+              `🎉 恢复完成！\n已恢复: ${counts.feeds ?? 0} 篇文章、${counts.comments ?? 0} 条评论、${counts.moments ?? 0} 条动态。\n点击确定将刷新页面。`,
+              () => {
+                window.location.reload();
+              }
+            );
+          }
+        } catch (err: any) {
+          showAlert(`解析或恢复失败: ${err.message}`);
+        } finally {
+          setBackupActionLoading(false);
+        }
+      }
+    );
+  };
 
   return (
     <div className="flex w-full flex-col">
@@ -598,6 +666,67 @@ export function Settings() {
           />
 
           <ItemTitle title={t("settings.maintenance.title")} />
+
+          {/* ============ ★ 一键全量数据备份与灾难恢复模块 ============ */}
+          <div className="w-full">
+            <SettingsCard>
+              <SettingsCardRow
+                header={
+                  <SettingsCardHeader
+                    title="数据全量备份（跨账号/防封归档）"
+                    description="将所有文章、草稿、分类标签、评论、动态、友链、站点设置与已绑定存储配置全部打包为一个 JSON 镜像快照。可随时下载到手机/电脑，或直接归档到云端存储桶。"
+                  />
+                }
+                action={
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      title={backupActionLoading ? "正在打包..." : "下载备份到本地"}
+                      onClick={handleDownloadBackup}
+                      disabled={backupActionLoading}
+                    />
+                    <Button
+                      secondary
+                      title={backupActionLoading ? "正在处理..." : "备份到云端存储桶"}
+                      onClick={handleExportToStorage}
+                      disabled={backupActionLoading}
+                    />
+                  </div>
+                }
+              />
+            </SettingsCard>
+          </div>
+
+          <div className="w-full">
+            <SettingsCard tone="warning">
+              <SettingsCardRow
+                header={
+                  <SettingsCardHeader
+                    title="数据一键恢复（导入备份包）"
+                    description="在新部署的博客或当前博客中上传之前的备份 JSON 文件，系统将分批写入并还原所有文章和配置，完成后自动清理缓存。"
+                    badge={<SettingsBadge tone="warning">覆盖式写入</SettingsBadge>}
+                  />
+                }
+                action={
+                  <>
+                    <input
+                      ref={restoreFileRef}
+                      type="file"
+                      accept=".json,application/json"
+                      className="hidden"
+                      onChange={handleRestoreFile}
+                    />
+                    <Button
+                      title={backupActionLoading ? "正在恢复数据..." : "选择备份文件恢复"}
+                      onClick={() => restoreFileRef.current?.click()}
+                      disabled={backupActionLoading}
+                    />
+                  </>
+                }
+              />
+            </SettingsCard>
+          </div>
+          {/* ======================================================= */}
+
           <ItemSwitch
             title={t("settings.cache.enabled.title")}
             description={t("settings.cache.enabled.desc")}
@@ -704,6 +833,7 @@ export function Settings() {
         </div>
       </Modal>
       <AlertUI />
+      <ConfirmUI />
     </div>
   );
 }

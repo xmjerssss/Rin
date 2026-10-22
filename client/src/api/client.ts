@@ -642,8 +642,27 @@ class StorageAdminAPI {
 class BackupAPI {
   constructor(private http: HttpClient) {}
 
-  // 浏览器原生拉取 Blob 并静默下载，不被弹窗拦截器阻拦
-  async download(): Promise<{ ok: boolean; error?: string }> {
+  // 1. 获取预备份统计信息
+  getPreview(): Promise<ApiResponse<{
+    ok: boolean;
+    preview: {
+      feedsCount: number;
+      commentsCount: number;
+      momentsCount: number;
+      friendsCount: number;
+      storagesCount: number;
+    };
+    targetStorage: {
+      configured: boolean;
+      name: string;
+      folder: string;
+    };
+  }>> {
+    return this.http.get("/api/backup/preview");
+  }
+
+  // 2. 本地下载
+  async download(): Promise<{ ok: boolean; error?: string; filename?: string }> {
     const token = getAuthToken();
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -673,19 +692,54 @@ class BackupAPI {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-      return { ok: true };
+      return { ok: true, filename };
     } catch (e: any) {
       return { ok: false, error: e.message || "下载失败" };
     }
   }
 
-  // 备份并归档至 S3/R2/WebDAV
-  exportToStorage(): Promise<ApiResponse<{ ok: boolean; path: string; target: string; metadata: any }>> {
+  // 3. 归档到云端
+  exportToStorage(): Promise<ApiResponse<{
+    ok: boolean;
+    filename: string;
+    path: string;
+    target: string;
+    metadata: any;
+    totalBackups: number;
+    prunedCount: number;
+  }>> {
     return this.http.post("/api/backup/export-to-storage", {});
   }
 
-  // 上传备份文件进行全量恢复
-  importFromFile(file: File): Promise<ApiResponse<{ ok: boolean; message: string; counts: any }>> {
+  // 4. 获取云端备份列表
+  listStorageBackups(): Promise<ApiResponse<{
+    ok: boolean;
+    target: string;
+    items: Array<{
+      key: string;
+      filename: string;
+      createdAt: string;
+      metadata?: any;
+    }>;
+  }>> {
+    return this.http.get("/api/backup/storage-list");
+  }
+
+  // 5. 从云端恢复
+  restoreFromStorage(key: string): Promise<ApiResponse<{
+    ok: boolean;
+    message: string;
+    counts: any;
+  }>> {
+    return this.http.post("/api/backup/restore-from-storage", { key });
+  }
+
+  // 6. 从本地文件恢复
+  importFromFile(file: File): Promise<ApiResponse<{
+    ok: boolean;
+    message: string;
+    counts: any;
+  }>> {
     const formData = new FormData();
     formData.append("file", file);
     return this.http.post("/api/backup/import", formData);

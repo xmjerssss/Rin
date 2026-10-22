@@ -186,10 +186,11 @@ describe('StorageService', () => {
 
             expect(res.status).toBe(200);
             expect(putCalls).toHaveLength(1);
-            expect(putCalls[0]?.key).toMatch(/^images\/[a-f0-9]+\.txt$/);
+            // .txt 文本文件在多存储策略中归属 files/ 路径
+            expect(putCalls[0]?.key).toMatch(/^files\/[a-f0-9]+\.txt$/);
             expect(putCalls[0]?.type).toBe('text/plain;charset=utf-8');
             const payload = await res.json() as { url: string };
-            expect(payload.url).toMatch(/^https:\/\/images\.example\.com\/images\/[a-f0-9]+\.txt$/);
+            expect(payload.url).toMatch(/^https:\/\/images\.example\.com\/files\/[a-f0-9]+\.txt$/);
         });
 
         it('should return an /api/blob URL when R2 is configured without S3_ACCESS_HOST', async () => {
@@ -232,7 +233,8 @@ describe('StorageService', () => {
             expect(putCalls).toHaveLength(1);
 
             const payload = await res.json() as { url: string };
-            expect(payload.url).toMatch(/^http:\/\/localhost\/api\/blob\/images\/[a-f0-9]+\.txt$/);
+            // .txt 文本文件在多存储策略中归属 files/ 路径
+            expect(payload.url).toMatch(/^http:\/\/localhost\/api\/blob\/files\/[a-f0-9]+\.txt$/);
         });
 
         it('should return 500 when S3_ENDPOINT is not defined without R2 binding', async () => {

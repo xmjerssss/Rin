@@ -20,18 +20,22 @@ import { driverForRow } from "../utils/storage-manager";
 
 const BACKUP_SCHEMA_VERSION = 1;
 const MAX_CLOUD_BACKUPS = 3; // 云端最多保留 3 份备份
+const BACKUP_DIR_NAME = "backups"; // 专门独立的备份归档目录
 
-/** 获取当前系统可用的最佳存储驱动 */
+/** 获取当前系统可用的最佳存储驱动并规划备份目录 */
 async function getActiveStorageDriver(env: Env, db: any) {
     const customStorages = await db.select().from(storages);
     const active = customStorages.find((s: any) => s.enabled === 1 && s.status === "ok");
     if (active) {
         const driver = await driverForRow(env, active);
-        return { driver, folder: active.folder || "", name: active.name, bucket: active.bucket };
+        const folder = active.folder ? `${active.folder}/${BACKUP_DIR_NAME}` : BACKUP_DIR_NAME;
+        return { driver, folder, name: active.name, bucket: active.bucket };
     }
     const envDriver = createEnvDriverIfConfigured(env);
     if (envDriver) {
-        return { driver: envDriver.driver, folder: envDriver.folder || "", name: "环境变量默认存储", bucket: env.S3_BUCKET || "default" };
+        const cleanEnvFolder = envDriver.folder.replace(/images\/?$/, "");
+        const folder = cleanEnvFolder ? `${cleanEnvFolder}/${BACKUP_DIR_NAME}` : BACKUP_DIR_NAME;
+        return { driver: envDriver.driver, folder, name: "环境变量默认存储", bucket: env.S3_BUCKET || "default" };
     }
     return null;
 }
@@ -253,7 +257,7 @@ export function BackupService(): Hono {
             targetStorage: {
                 configured: Boolean(target),
                 name: target?.name || "未配置",
-                folder: target ? `${target.folder ? `${target.folder}/` : ""}backups` : "",
+                folder: target ? target.folder : "",
             },
         });
     }));
@@ -276,7 +280,7 @@ export function BackupService(): Hono {
         });
     }));
 
-    // 2. POST /backup/export-to-storage —— 备份并存入云存储（最多保留 3 份，自动轮转）
+    // 2. POST /backup/export-to-storage —— 备份并存入云存储专属 backups/ 目录（最多保留 3 份）
     app.post("/export-to-storage", adminOnly(async (c: AppContext) => {
         const db = c.get("db");
         const env = c.get("env");
@@ -290,14 +294,12 @@ export function BackupService(): Hono {
         const jsonStr = JSON.stringify(snapshot, null, 2);
         const dateStr = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
         const fileName = `rin-backup-${dateStr}.json`;
-        const objectKey = `${target.folder ? `${target.folder}/` : ""}backups/${fileName}`.replace(/\/+/g, "/");
-        const indexKey = `${target.folder ? `${target.folder}/` : ""}backups/index.json`.replace(/\/+/g, "/");
+        const objectKey = `${target.folder}/${fileName}`.replace(/\/+/g, "/");
+        const indexKey = `${target.folder}/index.json` .replace(/\/+/g, "/");
 
         try {
-            // 写入新的备份文件
             await target.driver.put(objectKey, jsonStr, "application/json");
 
-            // 读取已有的 backups/index.json 列表
             let backupList: any[] = [];
             try {
                 const indexRes = await target.driver.get(indexKey);
@@ -310,7 +312,6 @@ export function BackupService(): Hono {
                 backupList = [];
             }
 
-            // 加入新备份记录到开头
             backupList.unshift({
                 key: objectKey,
                 filename: fileName,
@@ -318,7 +319,6 @@ export function BackupService(): Hono {
                 metadata: snapshot.metadata,
             });
 
-            // 检查数量：如果超出上限（3份），自动删除最早的备份文件
             let prunedCount = 0;
             if (backupList.length > MAX_CLOUD_BACKUPS) {
                 const toPrune = backupList.slice(MAX_CLOUD_BACKUPS);
@@ -331,7 +331,6 @@ export function BackupService(): Hono {
                 }
             }
 
-            // 更新并保存 index.json
             await target.driver.put(indexKey, JSON.stringify(backupList, null, 2), "application/json");
 
             return c.json({
@@ -349,7 +348,7 @@ export function BackupService(): Hono {
         }
     }));
 
-    // 3. GET /backup/storage-list —— 获取云端存储桶里的历史备份列表
+    // 3. GET /backup/storage-list —— 获取云端专属 backups/ 目录里的备份列表
     app.get("/storage-list", adminOnly(async (c: AppContext) => {
         const db = c.get("db");
         const env = c.get("env");
@@ -359,7 +358,7 @@ export function BackupService(): Hono {
             return c.json({ ok: false, error: "未配置存储桶" }, 400);
         }
 
-        const indexKey = `${target.folder ? `${target.folder}/` : ""}backups/index.json`.replace(/\/+/g, "/");
+        const indexKey = `${target.folder}/index.json`.replace(/\/+/g, "/");
         let items: any[] = [];
         try {
             const indexRes = await target.driver.get(indexKey);

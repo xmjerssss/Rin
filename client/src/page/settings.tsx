@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import ReactLoading from "react-loading";
 import { client, oauth_url } from "../app/runtime";
 import { Button } from "../components/button";
-import { useAlert, useConfirm } from "../components/dialog.tsx";
+import { useAlert } from "../components/dialog.tsx";
 import { HeaderLayoutPreview } from "../components/site-header/layout-preview";
 import {
   HEADER_BEHAVIOR_OPTIONS,
@@ -57,7 +57,6 @@ export function Settings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testingWebhook, setTestingWebhook] = useState(false);
-  const [backupActionLoading, setBackupActionLoading] = useState(false);
   const [webhookTestMessage, setWebhookTestMessage] = useState("");
   const [draft, setDraft] = useState<SettingsDraft>({ clientConfig: {}, serverConfig: {} });
   const [initialDraft, setInitialDraft] = useState<SettingsDraft>({ clientConfig: {}, serverConfig: {} });
@@ -66,7 +65,45 @@ export function Settings() {
   const restoreFileRef = useRef<HTMLInputElement>(null);
   const initialDraftRef = useRef<SettingsDraft>({ clientConfig: {}, serverConfig: {} });
   const { showAlert, AlertUI } = useAlert();
-  const { showConfirm, ConfirmUI } = useConfirm();
+
+  // ================= 备份 & 恢复交互状态 =================
+  const [backupActionLoading, setBackupActionLoading] = useState(false);
+
+  // 1. 备份前确认弹窗
+  const [backupConfirmModal, setBackupConfirmModal] = useState<{
+    open: boolean;
+    type: "local" | "cloud";
+    previewData?: any;
+    targetStorage?: any;
+  }>({ open: false, type: "local" });
+
+  // 2. 备份成功通知弹窗
+  const [backupSuccessModal, setBackupSuccessModal] = useState<{
+    open: boolean;
+    filename: string;
+    path: string;
+    target: string;
+    counts: any;
+  } | null>(null);
+
+  // 3. 云端历史备份选择列表弹窗
+  const [cloudBackupsModal, setCloudBackupsModal] = useState<{
+    open: boolean;
+    loading: boolean;
+    items: any[];
+    target: string;
+  }>({ open: false, loading: false, items: [], target: "" });
+
+  // 4. 恢复前确认弹窗（包含待恢复数据预览）
+  const [restoreConfirmModal, setRestoreConfirmModal] = useState<{
+    open: boolean;
+    source: "local" | "cloud";
+    localFile?: File | null;
+    cloudKey?: string;
+    filename: string;
+    exportedAt: string;
+    counts: any;
+  } | null>(null);
 
   function getDraftThemeColor(nextDraft: SettingsDraft) {
     return typeof nextDraft.clientConfig["theme.color"] === "string" ? nextDraft.clientConfig["theme.color"] : undefined;
@@ -179,69 +216,170 @@ export function Settings() {
     }
   }
 
-  // 1. 本地下载备份包
-  const handleDownloadBackup = async () => {
+  // ================= 备份 & 恢复处理函数 =================
+
+  // 1. 点击触发前置预览与确认弹窗
+  const openBackupConfirm = async (type: "local" | "cloud") => {
     setBackupActionLoading(true);
     try {
-      const res = await client.backup.download();
-      if (!res.ok) {
-        showAlert(res.error || "下载备份失败");
-      }
-    } catch (e: any) {
-      showAlert(`下载出错: ${e.message}`);
+      const { data } = await client.backup.getPreview();
+      setBackupConfirmModal({
+        open: true,
+        type,
+        previewData: data?.preview,
+        targetStorage: data?.targetStorage,
+      });
+    } catch {
+      setBackupConfirmModal({ open: true, type });
     } finally {
       setBackupActionLoading(false);
     }
   };
 
-  // 2. 备份至远程云存储桶
-  const handleExportToStorage = async () => {
+  // 2. 确认开始执行备份
+  const executeConfirmedBackup = async () => {
+    const type = backupConfirmModal.type;
+    setBackupConfirmModal({ ...backupConfirmModal, open: false });
     setBackupActionLoading(true);
+
     try {
-      const { data, error } = await client.backup.exportToStorage();
-      if (error) {
-        showAlert(`备份失败: ${error.value}`);
-      } else if (data?.ok) {
-        showAlert(`备份成功！\n目标存储: ${data.target}\n保存路径: ${data.path}`);
+      if (type === "local") {
+        const res = await client.backup.download();
+        if (!res.ok) {
+          showAlert(res.error || "下载备份失败");
+        } else {
+          setBackupSuccessModal({
+            open: true,
+            filename: res.filename || "rin-backup-xxxx.json",
+            path: "已下载至当前设备浏览器默认下载目录",
+            target: "本地设备",
+            counts: backupConfirmModal.previewData,
+          });
+        }
+      } else {
+        const { data, error } = await client.backup.exportToStorage();
+        if (error || !data?.ok) {
+          showAlert(`云端备份失败: ${error?.value || "存储桶写入异常"}`);
+        } else {
+          setBackupSuccessModal({
+            open: true,
+            filename: data.filename,
+            path: data.path,
+            target: data.target,
+            counts: data.metadata?.counts,
+          });
+        }
       }
     } catch (e: any) {
-      showAlert(`备份出错: ${e.message}`);
+      showAlert(`备份过程中出错: ${e.message}`);
     } finally {
       setBackupActionLoading(false);
     }
   };
 
-  // 3. 上传本地备份包恢复
-  const handleRestoreFile = async (e: ChangeEvent<HTMLInputElement>) => {
+  // 3. 打开云端备份历史选择列表
+  const openCloudBackupsList = async () => {
+    setCloudBackupsModal({ open: true, loading: true, items: [], target: "" });
+    try {
+      const { data, error } = await client.backup.listStorageBackups();
+      if (error || !data?.ok) {
+        showAlert(error?.value || "获取云端备份列表失败，请检查存储桶连接");
+        setCloudBackupsModal({ open: false, loading: false, items: [], target: "" });
+      } else {
+        setCloudBackupsModal({
+          open: true,
+          loading: false,
+          items: data.items || [],
+          target: data.target || "云端存储桶",
+        });
+      }
+    } catch (e: any) {
+      showAlert(`读取异常: ${e.message}`);
+      setCloudBackupsModal({ open: false, loading: false, items: [], target: "" });
+    }
+  };
+
+  // 4. 选择本地 JSON 文件 -> 客户端预解析 -> 弹出数据核对窗口
+  const handleSelectLocalFile = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
 
-    showConfirm(
-      "确认恢复备份？",
-      "⚠️ 警告：导入备份将用备份包中的内容完全覆盖当前博客的文章、评论、动态及配置。此操作无法撤销，确定继续吗？",
-      async () => {
-        setBackupActionLoading(true);
-        try {
-          const { data, error } = await client.backup.importFromFile(file);
-          if (error) {
-            showAlert(`恢复失败: ${error.value}`);
-          } else if (data?.ok) {
-            const counts = data.counts || {};
-            showAlert(
-              `🎉 恢复完成！\n已恢复: ${counts.feeds ?? 0} 篇文章、${counts.comments ?? 0} 条评论、${counts.moments ?? 0} 条动态。\n点击确定将刷新页面。`,
-              () => {
-                window.location.reload();
-              }
-            );
-          }
-        } catch (err: any) {
-          showAlert(`解析或恢复失败: ${err.message}`);
-        } finally {
-          setBackupActionLoading(false);
-        }
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!parsed || parsed.app !== "rin" || !parsed.data) {
+        showAlert("无效的备份文件：该文件不是由 Rin 生成的标准数据镜像。");
+        return;
       }
-    );
+      setRestoreConfirmModal({
+        open: true,
+        source: "local",
+        localFile: file,
+        filename: file.name,
+        exportedAt: parsed.exportedAt || "未知",
+        counts: parsed.metadata?.counts || {
+          feeds: parsed.data.feeds?.length ?? 0,
+          comments: parsed.data.comments?.length ?? 0,
+          moments: parsed.data.moments?.length ?? 0,
+          friends: parsed.data.friends?.length ?? 0,
+        },
+      });
+    } catch (err: any) {
+      showAlert(`读取备份文件出错: ${err.message}`);
+    }
+  };
+
+  // 5. 点击云端列表项 -> 弹出核对确认窗口
+  const handleSelectCloudBackupItem = (item: any) => {
+    setCloudBackupsModal({ ...cloudBackupsModal, open: false });
+    setRestoreConfirmModal({
+      open: true,
+      source: "cloud",
+      cloudKey: item.key,
+      filename: item.filename,
+      exportedAt: item.createdAt,
+      counts: item.metadata?.counts || {},
+    });
+  };
+
+  // 6. 最终确认执行恢复操作
+  const executeConfirmedRestore = async () => {
+    if (!restoreConfirmModal) return;
+    const { source, localFile, cloudKey } = restoreConfirmModal;
+    setRestoreConfirmModal(null);
+    setBackupActionLoading(true);
+
+    try {
+      let resData: any = null;
+      let resError: any = null;
+
+      if (source === "local" && localFile) {
+        const { data, error } = await client.backup.importFromFile(localFile);
+        resData = data;
+        resError = error;
+      } else if (source === "cloud" && cloudKey) {
+        const { data, error } = await client.backup.restoreFromStorage(cloudKey);
+        resData = data;
+        resError = error;
+      }
+
+      if (resError || !resData?.ok) {
+        showAlert(`恢复失败: ${resError?.value || resData?.error || "写入异常"}`);
+      } else {
+        const counts = resData.counts || {};
+        showAlert(
+          `🎉 全量数据恢复成功！\n成功还原: ${counts.feeds ?? 0} 篇文章、${counts.comments ?? 0} 条评论、${counts.moments ?? 0} 条动态、${counts.friends ?? 0} 个友链。\n点击确定将刷新页面。`,
+          () => {
+            window.location.reload();
+          }
+        );
+      }
+    } catch (err: any) {
+      showAlert(`恢复过程出错: ${err.message}`);
+    } finally {
+      setBackupActionLoading(false);
+    }
   };
 
   return (
@@ -667,27 +805,27 @@ export function Settings() {
 
           <ItemTitle title={t("settings.maintenance.title")} />
 
-          {/* ============ ★ 一键全量数据备份与灾难恢复模块 ============ */}
+          {/* ============ ★ 一键全量数据备份模块 ============ */}
           <div className="w-full">
             <SettingsCard>
               <SettingsCardRow
                 header={
                   <SettingsCardHeader
                     title="数据全量备份（跨账号/防封归档）"
-                    description="将所有文章、草稿、分类标签、评论、动态、友链、站点设置与已绑定存储配置全部打包为一个 JSON 镜像快照。可随时下载到手机/电脑，或直接归档到云端存储桶。"
+                    description="将包含所有文章、草稿、分类、评论、动态、友链、站点设置与已绑定存储配置全部打包。在执行前会展示数据概况与备份目标路径确认。"
                   />
                 }
                 action={
                   <div className="flex flex-wrap gap-2">
                     <Button
-                      title={backupActionLoading ? "正在打包..." : "下载备份到本地"}
-                      onClick={handleDownloadBackup}
+                      title={backupActionLoading ? "请稍候..." : "下载备份到本地"}
+                      onClick={() => openBackupConfirm("local")}
                       disabled={backupActionLoading}
                     />
                     <Button
                       secondary
-                      title={backupActionLoading ? "正在处理..." : "备份到云端存储桶"}
-                      onClick={handleExportToStorage}
+                      title={backupActionLoading ? "请稍候..." : "备份到云端存储桶"}
+                      onClick={() => openBackupConfirm("cloud")}
                       disabled={backupActionLoading}
                     />
                   </div>
@@ -696,36 +834,42 @@ export function Settings() {
             </SettingsCard>
           </div>
 
+          {/* ============ ★ 全量灾难恢复模块（本地文件 / 云端存储双选） ============ */}
           <div className="w-full">
             <SettingsCard tone="warning">
               <SettingsCardRow
                 header={
                   <SettingsCardHeader
-                    title="数据一键恢复（导入备份包）"
-                    description="在新部署的博客或当前博客中上传之前的备份 JSON 文件，系统将分批写入并还原所有文章和配置，完成后自动清理缓存。"
+                    title="数据恢复与灾难迁移（本地 / 云端双选）"
+                    description="支持选择本地 .json 备份包恢复，或直接从当前绑定的存储桶（S3/R2/WebDAV）恢复历史备份。恢复前会弹窗核对数据详情与二次确认。"
                     badge={<SettingsBadge tone="warning">覆盖式写入</SettingsBadge>}
                   />
                 }
                 action={
-                  <>
+                  <div className="flex flex-wrap gap-2">
                     <input
                       ref={restoreFileRef}
                       type="file"
                       accept=".json,application/json"
                       className="hidden"
-                      onChange={handleRestoreFile}
+                      onChange={handleSelectLocalFile}
                     />
                     <Button
-                      title={backupActionLoading ? "正在恢复数据..." : "选择备份文件恢复"}
+                      title="从本地文件恢复"
                       onClick={() => restoreFileRef.current?.click()}
                       disabled={backupActionLoading}
                     />
-                  </>
+                    <Button
+                      secondary
+                      title="从云端存储恢复"
+                      onClick={openCloudBackupsList}
+                      disabled={backupActionLoading}
+                    />
+                  </div>
                 }
               />
             </SettingsCard>
           </div>
-          {/* ======================================================= */}
 
           <ItemSwitch
             title={t("settings.cache.enabled.title")}
@@ -801,6 +945,180 @@ export function Settings() {
         </div>
       </main>
 
+      {/* 1. 备份前确认弹窗 */}
+      <Modal
+        isOpen={backupConfirmModal.open}
+        onRequestClose={() => setBackupConfirmModal({ ...backupConfirmModal, open: false })}
+        contentLabel="确认备份"
+        panelClassName="p-6"
+      >
+        <div className="flex flex-col items-start w-full">
+          <h1 className="text-xl font-bold tracking-[-0.02em] t-primary">
+            {backupConfirmModal.type === "local" ? "确认导出本地备份？" : "确认备份到云端存储桶？"}
+          </h1>
+          <p className="mt-2 text-sm text-neutral-500">
+            {backupConfirmModal.type === "local"
+              ? "系统将把博客全部数据打包生成为一个 JSON 快照，并通过浏览器直接下载到您的电脑或手机中。"
+              : "系统将把博客全部数据打包，并上传归档到您当前已绑定的云端存储桶中（自动保留最新的 3 份备份，旧备份自动清理淘汰）。"}
+          </p>
+
+          <div className="mt-4 w-full rounded-xl bg-secondary p-4 space-y-2 text-sm t-primary">
+            <p className="font-semibold text-xs uppercase tracking-wider text-theme">即将备份的数据概览：</p>
+            <div className="grid grid-cols-2 gap-2 pt-1 text-xs sm:text-sm">
+              <p>📄 文章数量: <span className="font-semibold">{backupConfirmModal.previewData?.feedsCount ?? "计算中..."}</span> 篇</p>
+              <p>💬 评论条数: <span className="font-semibold">{backupConfirmModal.previewData?.commentsCount ?? "计算中..."}</span> 条</p>
+              <p>⚡ 动态数量: <span className="font-semibold">{backupConfirmModal.previewData?.momentsCount ?? "计算中..."}</span> 条</p>
+              <p>🤝 友链数量: <span className="font-semibold">{backupConfirmModal.previewData?.friendsCount ?? "计算中..."}</span> 个</p>
+              <p>💾 存储配置: <span className="font-semibold">{backupConfirmModal.previewData?.storagesCount ?? "计算中..."}</span> 个</p>
+            </div>
+            <div className="pt-2 border-t border-black/5 dark:border-white/5 text-xs text-neutral-500">
+              <p>📍 备份目标: <span className="font-semibold t-primary">
+                {backupConfirmModal.type === "local"
+                  ? "本地设备（浏览器下载文件）"
+                  : `${backupConfirmModal.targetStorage?.name || "绑定的存储桶"} -> ${backupConfirmModal.targetStorage?.folder || "backups"}/`}
+              </span></p>
+            </div>
+          </div>
+
+          <div className="mt-6 flex w-full justify-end gap-2">
+            <Button secondary title="取消" onClick={() => setBackupConfirmModal({ ...backupConfirmModal, open: false })} />
+            <Button
+              title={backupActionLoading ? "正在打包..." : "确认开始备份"}
+              onClick={executeConfirmedBackup}
+              disabled={backupActionLoading}
+            />
+          </div>
+        </div>
+      </Modal>
+
+      {/* 2. 备份成功信息回执弹窗 */}
+      <Modal
+        isOpen={Boolean(backupSuccessModal?.open)}
+        onRequestClose={() => setBackupSuccessModal(null)}
+        contentLabel="备份成功"
+        panelClassName="p-6"
+      >
+        {backupSuccessModal ? (
+          <div className="flex flex-col items-start w-full">
+            <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
+              <i className="ri-checkbox-circle-fill text-2xl" />
+              <h1 className="text-xl font-bold tracking-[-0.02em] t-primary">备份打包成功！</h1>
+            </div>
+            <p className="mt-2 text-sm text-neutral-500">您的数据已经生成并安全写入，详细信息如下：</p>
+
+            <div className="mt-4 w-full rounded-xl bg-secondary p-4 space-y-2 text-xs sm:text-sm t-primary">
+              <p>🏷️ <b>备份文件名：</b> <span className="font-mono">{backupSuccessModal.filename}</span></p>
+              <p>📦 <b>目标存储：</b> <span>{backupSuccessModal.target}</span></p>
+              <p>📍 <b>存储路径：</b> <span className="font-mono break-all">{backupSuccessModal.path}</span></p>
+              {backupSuccessModal.counts ? (
+                <div className="pt-2 border-t border-black/5 dark:border-white/5 grid grid-cols-2 gap-1 text-neutral-500">
+                  <span>包含文章: {backupSuccessModal.counts.feeds ?? 0} 篇</span>
+                  <span>包含评论: {backupSuccessModal.counts.comments ?? 0} 条</span>
+                  <span>包含动态: {backupSuccessModal.counts.moments ?? 0} 条</span>
+                  <span>包含友链: {backupSuccessModal.counts.friends ?? 0} 个</span>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="mt-6 flex w-full justify-end">
+              <Button title="好的，我知道了" onClick={() => setBackupSuccessModal(null)} />
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      {/* 3. 云端备份历史选择列表弹窗 */}
+      <Modal
+        isOpen={cloudBackupsModal.open}
+        onRequestClose={() => setCloudBackupsModal({ ...cloudBackupsModal, open: false })}
+        contentLabel="选择云端备份恢复"
+        size="lg"
+        panelClassName="p-6"
+      >
+        <div className="flex flex-col items-start w-full">
+          <h1 className="text-xl font-bold tracking-[-0.02em] t-primary">从云端存储桶恢复数据</h1>
+          <p className="mt-1 text-sm text-neutral-500">
+            当前存储桶（{cloudBackupsModal.target}）中最多保留的 3 份历史快照，点击即可选择恢复：
+          </p>
+
+          <div className="mt-4 w-full max-h-80 overflow-y-auto space-y-3">
+            {cloudBackupsModal.loading ? (
+              <div className="flex items-center justify-center p-8 text-neutral-400 gap-2">
+                <ReactLoading type="spin" color="#FC466B" width={20} height={20} />
+                <span>正在读取存储桶...</span>
+              </div>
+            ) : cloudBackupsModal.items.length === 0 ? (
+              <p className="p-8 text-center text-sm text-neutral-400">存储桶中暂无任何备份文件（backups/index.json 为空）</p>
+            ) : (
+              cloudBackupsModal.items.map((item, idx) => (
+                <div
+                  key={item.key || idx}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl border border-black/10 dark:border-white/10 bg-secondary gap-3"
+                >
+                  <div className="min-w-0">
+                    <p className="font-mono text-sm font-semibold truncate t-primary">{item.filename}</p>
+                    <p className="text-xs text-neutral-400 mt-1">
+                      备份时间: {new Date(item.createdAt).toLocaleString()} · 包含文章: {item.metadata?.counts?.feeds ?? 0} 篇
+                    </p>
+                  </div>
+                  <Button
+                    title="选择此备份"
+                    onClick={() => handleSelectCloudBackupItem(item)}
+                  />
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="mt-6 flex w-full justify-end">
+            <Button secondary title="关闭" onClick={() => setCloudBackupsModal({ ...cloudBackupsModal, open: false })} />
+          </div>
+        </div>
+      </Modal>
+
+      {/* 4. 恢复前确认弹窗（展示备份内详细内容并提示覆盖警告） */}
+      <Modal
+        isOpen={Boolean(restoreConfirmModal?.open)}
+        onRequestClose={() => setRestoreConfirmModal(null)}
+        contentLabel="确认恢复备份"
+        panelClassName="p-6"
+      >
+        {restoreConfirmModal ? (
+          <div className="flex flex-col items-start w-full">
+            <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
+              <i className="ri-error-warning-fill text-2xl" />
+              <h1 className="text-xl font-bold tracking-[-0.02em] t-primary">确认恢复此份备份？</h1>
+            </div>
+            <p className="mt-2 text-sm text-rose-600 dark:text-rose-300 font-medium">
+              ⚠️ 高风险覆盖警示：恢复将用此备份包彻底覆盖当前站点的文章、动态、评论、友链和自定义配置！此操作无法撤销！
+            </p>
+
+            <div className="mt-4 w-full rounded-xl bg-secondary p-4 space-y-2 text-xs sm:text-sm t-primary">
+              <p className="font-semibold text-xs uppercase tracking-wider text-theme">即将恢复的数据镜像详情：</p>
+              <p>📦 <b>恢复来源：</b> {restoreConfirmModal.source === "local" ? "本地上传文件" : "云端存储桶文件"}</p>
+              <p>🏷️ <b>备份文件名：</b> <span className="font-mono">{restoreConfirmModal.filename}</span></p>
+              <p>🕒 <b>备份生成时间：</b> <span>{new Date(restoreConfirmModal.exportedAt).toLocaleString()}</span></p>
+              <div className="pt-2 border-t border-black/5 dark:border-white/5 grid grid-cols-2 gap-2 text-xs">
+                <span>📄 文章: {restoreConfirmModal.counts?.feeds ?? 0} 篇</span>
+                <span>💬 评论: {restoreConfirmModal.counts?.comments ?? 0} 条</span>
+                <span>⚡ 动态: {restoreConfirmModal.counts?.moments ?? 0} 条</span>
+                <span>🤝 友链: {restoreConfirmModal.counts?.friends ?? 0} 个</span>
+              </div>
+            </div>
+
+            <div className="mt-6 flex w-full justify-end gap-2">
+              <Button secondary title="取消" onClick={() => setRestoreConfirmModal(null)} disabled={backupActionLoading} />
+              <Button
+                title={backupActionLoading ? "正在恢复写入..." : "确认覆盖并恢复"}
+                onClick={executeConfirmedRestore}
+                disabled={backupActionLoading}
+              />
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      {/* WordPress 导入弹窗保持不变 */}
       <Modal
         isOpen={isOpen}
         onRequestClose={() => setIsOpen(false)}
@@ -833,7 +1151,6 @@ export function Settings() {
         </div>
       </Modal>
       <AlertUI />
-      <ConfirmUI />
     </div>
   );
 }

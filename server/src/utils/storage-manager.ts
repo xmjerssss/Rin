@@ -20,6 +20,22 @@ export type StorageFileRow = typeof storageFiles.$inferSelect;
 
 export const DEFAULT_STORAGE_ID = 0;
 
+export type FileCategory = "images" | "videos" | "files";
+
+/** 根据 MIME 类型和文件名后缀自动识别分类文件夹 */
+export function detectFileCategory(mime?: string, fileName?: string): FileCategory {
+    const lowerMime = (mime || "").toLowerCase();
+    const lowerName = (fileName || "").toLowerCase();
+
+    if (lowerMime.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp|svg|ico|bmp|avif)$/i.test(lowerName)) {
+        return "images";
+    }
+    if (lowerMime.startsWith("video/") || /\.(mp4|webm|mov|mkv|m4v|ogv|flv|avi|wmv)$/i.test(lowerName)) {
+        return "videos";
+    }
+    return "files";
+}
+
 function trimSlash(value: string) {
     return value.replace(/\/+$/, "");
 }
@@ -31,9 +47,12 @@ export function sanitizeExtension(name: string): string {
     return ext;
 }
 
-export function buildFileKey(hashOrId: string, fileName: string): string {
+/** 构建带分类子目录的文件 key，例如 images/xxx.png, videos/xxx.mp4, files/xxx.zip */
+export function buildFileKey(hashOrId: string, fileName: string, category?: FileCategory): string {
     const ext = sanitizeExtension(fileName);
-    return ext ? `${hashOrId}.${ext}` : hashOrId;
+    const fileWithExt = ext ? `${hashOrId}.${ext}` : hashOrId;
+    const cat = category || detectFileCategory(undefined, fileName);
+    return `${cat}/${fileWithExt}`;
 }
 
 export function buildBlobPath(key: string): string {
@@ -111,17 +130,11 @@ async function markStorage(db: DB, id: number, status: "ok" | "full" | "error", 
 }
 
 export interface UploadCandidate {
-    /** 0 表示环境变量默认存储 */
     id: number;
     row?: StorageRow;
     folder: string;
 }
 
-/**
- * 选择上传目标，顺序：
- * 1. 已启用、未标记为"已满"、未超过容量上限的自定义存储（按优先级从高到低）
- * 2. 环境变量绑定的默认存储（兜底）
- */
 export async function pickUploadCandidates(db: DB, env: Env, incomingSize: number): Promise<UploadCandidate[]> {
     const rows = await db
         .select()
@@ -142,7 +155,6 @@ export async function pickUploadCandidates(db: DB, env: Env, incomingSize: numbe
         }
     }
 
-    // 环境默认存储始终作为最后兜底；配置不完整时由后续 put 抛出明确的错误信息
     candidates.push({ id: DEFAULT_STORAGE_ID, folder: env.S3_FOLDER || "" });
     return candidates;
 }
@@ -161,10 +173,6 @@ export interface FileMeta {
     size: number;
 }
 
-/**
- * 按优先级把文件写入存储，失败自动切换到下一个。
- * 容量类错误会把该存储标记为"已满"，之后不再选用，直到管理员在后台重置。
- */
 export async function storeFile(
     db: DB,
     env: Env,
@@ -172,7 +180,6 @@ export async function storeFile(
     body: StorageBody,
     baseUrl?: string,
 ): Promise<StoredFile> {
-    // 内容寻址 key 已存在且所在存储仍然有效 → 直接复用，不重复上传
     const existing = await getFileRow(db, meta.key);
     if (existing) {
         const stillValid =
@@ -190,17 +197,15 @@ export async function storeFile(
             if (candidate.id === DEFAULT_STORAGE_ID) {
                 const envDriver = createEnvDriverIfConfigured(env);
                 if (!envDriver) {
-                    // 自定义存储都失败了，且没有默认存储兜底：抛出自定义存储的真实错误，而不是 "S3_ENDPOINT is not defined"
                     if (lastError) throw lastError;
-                    // 没有任何自定义存储：沿用旧逻辑的报错信息（S3_ENDPOINT is not defined 等）
                     resolveStorageTarget(env);
                     throw new Error("No storage is configured");
                 }
-                const objectKey = path_join(envDriver.folder, meta.key);
+                const cleanFolder = envDriver.folder.replace(/images\/?$/, "");
+                const objectKey = path_join(cleanFolder, meta.key);
                 await envDriver.driver.put(objectKey, body, meta.mime || undefined);
-                // 默认存储沿用旧的 URL 规则（有 S3_ACCESS_HOST 时返回直链，否则 /api/blob/<folder>/<key>）
                 await recordFile(db, {
-                    key: path_join(envDriver.folder, meta.key),
+                    key: meta.key,
                     storageId: DEFAULT_STORAGE_ID,
                     objectKey,
                     name: meta.name,
@@ -208,7 +213,7 @@ export async function storeFile(
                     size: meta.size,
                 });
                 return {
-                    key: objectKey,
+                    key: meta.key,
                     url: getStoragePublicUrl(env, objectKey, baseUrl),
                     storageId: DEFAULT_STORAGE_ID,
                     reused: false,
@@ -254,7 +259,6 @@ export interface DirectUploadPlan {
     upload: PresignedUpload;
 }
 
-/** 为大文件挑选一个支持预签名直传的存储（S3 / R2 兼容）。没有则返回 null，调用方走 Worker 中转。 */
 export async function planDirectUpload(
     db: DB,
     env: Env,
@@ -286,7 +290,6 @@ export interface FileSource {
     storage?: StorageRow;
 }
 
-/** 根据 /api/blob/<key> 里的 key 找到文件实际所在的存储。 */
 export async function resolveFileSource(db: DB, env: Env, key: string): Promise<FileSource | null> {
     const fileRow = await getFileRow(db, key);
 
@@ -296,7 +299,6 @@ export async function resolveFileSource(db: DB, env: Env, key: string): Promise<
         return { driver: await driverForRow(env, storage), objectKey: fileRow.objectKey, row: fileRow, storage };
     }
 
-    // 默认存储里的文件（旧文章里的链接，或没有配置自定义存储时上传的文件）
     const envDriver = createEnvDriverIfConfigured(env);
     if (!envDriver) return null;
     return { driver: envDriver.driver, objectKey: fileRow?.objectKey ?? key, row: fileRow };

@@ -1,5 +1,6 @@
 import type { RinApp } from "./app-types";
 import { PasswordAuthService } from "../services/auth";
+import { BackupService } from "../services/backup"; // <--- 新增
 import { CommentService } from "../services/comments";
 import { ConfigService } from "../services/config";
 import { FaviconService } from "../services/favicon";
@@ -24,6 +25,7 @@ export function registerRoutes(app: RinApp) {
   app.route("/storage", StorageService());
   app.route("/storages", StorageAdminService());
   app.route("/blob", BlobService());
+  app.route("/backup", BackupService()); // <--- 新增
   app.route("/friend", FriendService());
   app.route("/moments", MomentsService());
   app.route("/user", UserService());

@@ -130,6 +130,50 @@ export interface CompatBlurhashApplyResponse {
   updated: boolean;
 }
 
+// 备份相关数据结构
+export interface BackupPreviewResponse {
+  ok: boolean;
+  preview: {
+    feedsCount: number;
+    commentsCount: number;
+    momentsCount: number;
+    friendsCount: number;
+    storagesCount: number;
+  };
+  targetStorage: {
+    configured: boolean;
+    name: string;
+    folder: string;
+  };
+}
+
+export interface BackupExportToStorageResponse {
+  ok: boolean;
+  filename: string;
+  path: string;
+  target: string;
+  metadata: any;
+  totalBackups: number;
+  prunedCount: number;
+}
+
+export interface BackupStorageListResponse {
+  ok: boolean;
+  target: string;
+  items: Array<{
+    key: string;
+    filename: string;
+    createdAt: string;
+    metadata?: any;
+  }>;
+}
+
+export interface BackupRestoreResponse {
+  ok: boolean;
+  message: string;
+  counts: any;
+}
+
 // Re-export for external use
 export type {
   ApiResponse,
@@ -504,7 +548,7 @@ class ConfigAPI {
     "webhook.body_template"?: string;
     test_message?: string;
   }): Promise<ApiResponse<{ success: boolean; error?: string; details?: string }>> {
-    return this.http.post("/api/config/test-webhook", body);
+    return this.http.post<{ success: boolean; error?: string; details?: string }>("/api/config/test-webhook", body);
   }
 }
 
@@ -637,28 +681,14 @@ class StorageAdminAPI {
 }
 
 /**
- * Backup API methods (全新增加)
+ * Backup API methods
  */
 class BackupAPI {
   constructor(private http: HttpClient) {}
 
   // 1. 获取预备份统计信息
-  getPreview(): Promise<ApiResponse<{
-    ok: boolean;
-    preview: {
-      feedsCount: number;
-      commentsCount: number;
-      momentsCount: number;
-      friendsCount: number;
-      storagesCount: number;
-    };
-    targetStorage: {
-      configured: boolean;
-      name: string;
-      folder: string;
-    };
-  }>> {
-    return this.http.get("/api/backup/preview");
+  getPreview(): Promise<ApiResponse<BackupPreviewResponse>> {
+    return this.http.get<BackupPreviewResponse>("/api/backup/preview");
   }
 
   // 2. 本地下载
@@ -699,50 +729,25 @@ class BackupAPI {
   }
 
   // 3. 归档到云端
-  exportToStorage(): Promise<ApiResponse<{
-    ok: boolean;
-    filename: string;
-    path: string;
-    target: string;
-    metadata: any;
-    totalBackups: number;
-    prunedCount: number;
-  }>> {
-    return this.http.post("/api/backup/export-to-storage", {});
+  exportToStorage(): Promise<ApiResponse<BackupExportToStorageResponse>> {
+    return this.http.post<BackupExportToStorageResponse>("/api/backup/export-to-storage", {});
   }
 
   // 4. 获取云端备份列表
-  listStorageBackups(): Promise<ApiResponse<{
-    ok: boolean;
-    target: string;
-    items: Array<{
-      key: string;
-      filename: string;
-      createdAt: string;
-      metadata?: any;
-    }>;
-  }>> {
-    return this.http.get("/api/backup/storage-list");
+  listStorageBackups(): Promise<ApiResponse<BackupStorageListResponse>> {
+    return this.http.get<BackupStorageListResponse>("/api/backup/storage-list");
   }
 
   // 5. 从云端恢复
-  restoreFromStorage(key: string): Promise<ApiResponse<{
-    ok: boolean;
-    message: string;
-    counts: any;
-  }>> {
-    return this.http.post("/api/backup/restore-from-storage", { key });
+  restoreFromStorage(key: string): Promise<ApiResponse<BackupRestoreResponse>> {
+    return this.http.post<BackupRestoreResponse>("/api/backup/restore-from-storage", { key });
   }
 
   // 6. 从本地文件恢复
-  importFromFile(file: File): Promise<ApiResponse<{
-    ok: boolean;
-    message: string;
-    counts: any;
-  }>> {
+  importFromFile(file: File): Promise<ApiResponse<BackupRestoreResponse>> {
     const formData = new FormData();
     formData.append("file", file);
-    return this.http.post("/api/backup/import", formData);
+    return this.http.post<BackupRestoreResponse>("/api/backup/import", formData);
   }
 }
 

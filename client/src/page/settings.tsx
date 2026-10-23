@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import ReactLoading from "react-loading";
 import { client, oauth_url } from "../app/runtime";
 import { Button } from "../components/button";
-import { useAlert } from "../components/dialog.tsx";
+import { useAlert } from "../components/dialog";
 import { HeaderLayoutPreview } from "../components/site-header/layout-preview";
 import {
   HEADER_BEHAVIOR_OPTIONS,
@@ -203,7 +203,7 @@ export function Settings() {
         test_message: webhookTestMessage,
       });
 
-      if (error || !data?.success) {
+      if (error || !data || !data.success) {
         const message = error?.value || data?.error || t("settings.webhook.test.failed");
         const details = data?.details ? `\n${data.details}` : "";
         showAlert(`${message}${details}`);
@@ -258,7 +258,7 @@ export function Settings() {
         }
       } else {
         const { data, error } = await client.backup.exportToStorage();
-        if (error || !data?.ok) {
+        if (error || !data || !data.ok) {
           showAlert(`云端备份失败: ${error?.value || "存储桶写入异常"}`);
         } else {
           setBackupSuccessModal({
@@ -282,7 +282,7 @@ export function Settings() {
     setCloudBackupsModal({ open: true, loading: true, items: [], target: "" });
     try {
       const { data, error } = await client.backup.listStorageBackups();
-      if (error || !data?.ok) {
+      if (error || !data || !data.ok) {
         showAlert(error?.value || "获取云端备份列表失败，请检查存储桶连接");
         setCloudBackupsModal({ open: false, loading: false, items: [], target: "" });
       } else {
@@ -364,7 +364,7 @@ export function Settings() {
         resError = error;
       }
 
-      if (resError || !resData?.ok) {
+      if (resError || !resData || !resData.ok) {
         showAlert(`恢复失败: ${resError?.value || resData?.error || "写入异常"}`);
       } else {
         const counts = resData.counts || {};
